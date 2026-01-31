@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+:root {
+    --background: #0f172a;
+    /* Slate 900 - Deep Blue Background */
+    --foreground: #f8fafc;
+    /* Slate 50 */
+    --card-bg: rgba(30, 41, 59, 0.7);
+    /* Slate 800 with opacity */
+    --border-color: rgba(148, 163, 184, 0.2);
+}
+
+body {
+    color: var(--foreground);
+    background-color: #0f172a;
+    /* Subtle radial gradient for depth */
+    background: radial-gradient(circle at top, #1e293b, #0f172a);
+    min-height: 100vh;
+    font-family: 'Inter', system-ui, sans-serif;
+    overflow-x: hidden;
+}
+
+/* Premium Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 9999px;
+    border: 2px solid #0f172a;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+/* Hide Spinners */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+input[type=number] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
