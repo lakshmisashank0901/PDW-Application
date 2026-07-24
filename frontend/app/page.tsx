@@ -10,7 +10,7 @@ export default function Home() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   return (
-    <div className="flex min-h-screen bg-[#0f172a] text-slate-50 font-sans selection:bg-sky-500/30">
+    <div className="flex h-screen bg-[#0f172a] text-slate-50 font-sans selection:bg-sky-500/30">
 
       {/* Sidebar */}
       <aside
@@ -71,7 +71,7 @@ export default function Home() {
 
       {/* Main Content Area */}
       <main
-        className={`flex-1 overflow-y-auto w-full transition-all duration-300 ease-in-out ${isSidebarCollapsed ? 'ml-20' : 'ml-64'} ${activeTab === 'visualizer' ? 'p-0' : 'p-8 md:p-12'}`}
+        className={`flex-1 overflow-y-auto w-full h-full transition-all duration-300 ease-in-out ${isSidebarCollapsed ? 'ml-20' : 'ml-64'} ${activeTab === 'visualizer' ? 'p-0' : 'p-8 md:p-12'}`}
       >
         {activeTab === 'generator' && (
           <div className="w-full max-w-7xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">

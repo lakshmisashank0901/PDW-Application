@@ -6,9 +6,14 @@ import {
     LinearScale, PointElement, LineElement, Tooltip, Legend
 } from 'chart.js';
 import { Scatter } from 'react-chartjs-2';
-import zoomPlugin from 'chartjs-plugin-zoom';
 
-ChartJS.register(LinearScale, PointElement, LineElement, Tooltip, Legend, zoomPlugin);
+ChartJS.register(LinearScale, PointElement, LineElement, Tooltip, Legend);
+
+if (typeof window !== 'undefined') {
+    import('chartjs-plugin-zoom').then((plugin) => {
+        ChartJS.register(plugin.default);
+    });
+}
 
 // ... (existing code)
 
@@ -122,7 +127,7 @@ export default function VisualizerWorkspace() {
         if (!isSyncZoom) return;
 
         Object.entries(chartRefs.current).forEach(([col, chart]) => {
-            if (!chart) return;
+            if (!chart || chart.destroyed || !chart.canvas) return;
 
             // If no index is hovered, clear highlights
             if (hoveredIndex === null) {
@@ -554,6 +559,8 @@ export default function VisualizerWorkspace() {
                         ref={(ref) => {
                             if (ref) {
                                 chartRefs.current[col] = ref;
+                            } else {
+                                delete chartRefs.current[col];
                             }
                         }}
                         id={`chart-canvas-${col}`}
@@ -749,6 +756,7 @@ export default function VisualizerWorkspace() {
                     <div className="flex flex-col items-center justify-center gap-1 border border-white/10 rounded-[4px] px-2 py-1 h-full">
                         <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Sync Zoom</span>
                         <button
+                            disabled={selectedColumns.length === 0}
                             onClick={() => {
                                 const nextState = !isSyncZoom;
                                 setIsSyncZoom(nextState);
@@ -774,7 +782,7 @@ export default function VisualizerWorkspace() {
                                     }
                                 }
                             }}
-                            className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors ${isSyncZoom ? 'bg-sky-500' : 'bg-slate-700'}`}
+                            className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isSyncZoom ? 'bg-sky-500' : 'bg-slate-700'}`}
                         >
                             <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${isSyncZoom ? 'translate-x-full' : 'translate-x-0'}`}></div>
                         </button>
