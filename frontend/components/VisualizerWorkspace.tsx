@@ -104,7 +104,7 @@ export default function VisualizerWorkspace() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isSyncZoom, setIsSyncZoom] = useState(false);
 
-    const CHARTS_PER_PAGE = 2;
+    const CHARTS_PER_PAGE = 3;
     const totalPages = Math.ceil(selectedColumns.length / CHARTS_PER_PAGE) || 1;
 
     if (currentPage > totalPages && totalPages > 0) {
@@ -196,53 +196,62 @@ export default function VisualizerWorkspace() {
     }, []);
 
     const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-
-        // Create Object URL for the file to enable opening/downloading
-        const fileUrl = URL.createObjectURL(file);
+        const files = Array.from(event.target.files || []);
+        if (files.length === 0) return;
 
         event.target.value = '';
         setIsUploading(true);
-        const formData = new FormData();
-        formData.append('file', file);
 
         try {
-            const response = await fetch('http://localhost:8000/visualize/upload', {
-                method: 'POST',
-                body: formData,
-            });
+            const uploadPromises = files.map(async (file) => {
+                const fileUrl = URL.createObjectURL(file);
+                const formData = new FormData();
+                formData.append('file', file);
 
-            if (!response.ok) {
-                throw new Error('Upload failed');
-            }
+                const response = await fetch('http://localhost:8000/visualize/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
 
-            const result = await response.json();
-            if (result.error) {
-                alert(result.error);
-            } else {
+                if (!response.ok) {
+                    throw new Error(`Upload failed for ${file.name}`);
+                }
+
+                const result = await response.json();
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+
                 const chartData = result.data.map((item: any, index: number) => ({
                     ...item,
                     index: index + 1
                 }));
 
-                const newDataset: Dataset = {
+                return {
                     id: Math.random().toString(36).substr(2, 9),
                     filename: result.filename,
                     data: chartData,
                     columns: result.columns,
-                    color: FILE_COLORS[datasets.length % FILE_COLORS.length],
-                    fileUrl: fileUrl // Store the URL
+                    fileUrl: fileUrl
                 };
+            });
 
-                setDatasets(prev => [...prev, newDataset]);
-                if (datasets.length === 0) {
-                    setSelectedColumns([]);
-                }
+            const results = await Promise.all(uploadPromises);
+            
+            setDatasets(prev => {
+                const newDatasets = results.map((result, i) => ({
+                    ...result,
+                    color: FILE_COLORS[(prev.length + i) % FILE_COLORS.length],
+                }));
+                return [...prev, ...newDatasets];
+            });
+
+            if (datasets.length === 0 && results.length > 0) {
+                setSelectedColumns([]);
             }
-        } catch (error) {
-            console.error('Error uploading file:', error);
-            alert('Failed to upload file.');
+        } catch (error: any) {
+            console.error('Error uploading files:', error);
+            alert('Failed to upload files: ' + error.message);
         } finally {
             setIsUploading(false);
         }
@@ -534,7 +543,7 @@ export default function VisualizerWorkspace() {
                     ${isFullSize
                         ? 'h-full w-full bg-slate-900 rounded-none p-6 border-none'
                         : `
-                            ${paginatedColumns.length === 1 ? 'h-full' : 'h-[48%]'} 
+                            ${paginatedColumns.length === 1 ? 'h-full' : paginatedColumns.length === 2 ? 'h-[48%]' : 'h-[32%]'} 
                             rounded-xl p-4 shadow-lg backdrop-blur-sm animate-in fade-in slide-in-from-bottom-4 duration-500
                             ${isSelected
                             ? 'bg-slate-900 border-sky-500 ring-1 ring-sky-500/50 shadow-sky-900/20'
@@ -577,7 +586,7 @@ export default function VisualizerWorkspace() {
         <div className="flex h-full w-full bg-slate-900 text-slate-200 font-sans overflow-hidden">
 
             {/* 1. Secondary Sidebar (Left, Full Height) */}
-            <aside className="w-[250px] shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20">
+            <aside className="w-[200px] shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20">
                 <div className="h-[60px] flex items-center px-4 justify-between">
                     <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Data Sources</h3>
                     {datasets.length > 0 && (
@@ -600,8 +609,9 @@ export default function VisualizerWorkspace() {
                             type="file"
                             ref={fileInputRef}
                             onChange={handleFileUpload}
-                            accept=".xlsx, .xls"
+                            accept=".xlsx, .xls, .csv"
                             className="hidden"
+                            multiple
                         />
                         <div className="size-8 rounded-full bg-slate-800 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
                             {isUploading ? (
@@ -687,180 +697,158 @@ export default function VisualizerWorkspace() {
                 </div>
             </aside>
 
-            {/* Right Column: Header + Canvas */}
-            <div className="flex flex-col flex-1 min-w-0 bg-slate-950">
+            {/* 2. Second Sidebar (Chart Controls) */}
+            <aside className="w-[140px] shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20 overflow-y-auto custom-scrollbar p-3 gap-4">
+                <div className="flex items-center justify-between mb-1 border-b border-white/5 pb-2">
+                    <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-tight">Chart Controls</h3>
+                </div>
 
-                {/* 2. Head Bar */}
-                <header className="min-h-[70px] h-auto shrink-0 bg-slate-900 border-b border-white/5 flex flex-wrap items-center px-6 gap-6 py-2 overflow-visible z-30">
-
-                    {/* Zoom Internal Controls */}
-                    <fieldset className={`border ${selectedChart ? 'border-sky-500/50' : 'border-white/10 opacity-50'} rounded-[4px] px-3 pb-2 pt-1 flex items-center gap-6 group hover:border-white/20 transition-all`}>
-                        <legend className={`px-1 text-[9px] font-bold uppercase tracking-wider ${selectedChart ? 'text-sky-400' : 'text-slate-600'}`}>
-                            {selectedChart ? `Zoom: ${selectedChart}` : 'Select a Chart'}
-                        </legend>
-
-                        <div className="flex flex-col justify-center gap-1">
-                            <div className="flex items-center gap-2">
-                                <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">Min X</label>
-                                <input
-                                    type="number"
-                                    value={currentZoom.minX}
-                                    onChange={(e) => updateZoom('minX', e.target.value)}
-                                    disabled={!selectedChart}
-                                    className="w-16 h-5 bg-slate-800 border border-white/10 rounded-[2px] px-1 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
-                                    placeholder="Auto"
-                                />
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">Max X</label>
-                                <input
-                                    type="number"
-                                    value={currentZoom.maxX}
-                                    onChange={(e) => updateZoom('maxX', e.target.value)}
-                                    disabled={!selectedChart}
-                                    className="w-16 h-5 bg-slate-800 border border-white/10 rounded-[2px] px-1 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
-                                    placeholder="Auto"
-                                />
-                            </div>
-                        </div>
-
-                        <div className="w-px h-8 bg-white/10"></div>
-
-                        <div className="flex flex-col justify-center gap-1">
-                            <div className="flex items-center gap-2">
-                                <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">Min Y</label>
-                                <input
-                                    type="number"
-                                    value={currentZoom.minY}
-                                    onChange={(e) => updateZoom('minY', e.target.value)}
-                                    disabled={!selectedChart}
-                                    className="w-16 h-5 bg-slate-800 border border-white/10 rounded-[2px] px-1 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
-                                    placeholder="Auto"
-                                />
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">Max Y</label>
-                                <input
-                                    type="number"
-                                    value={currentZoom.maxY}
-                                    onChange={(e) => updateZoom('maxY', e.target.value)}
-                                    disabled={!selectedChart}
-                                    className="w-16 h-5 bg-slate-800 border border-white/10 rounded-[2px] px-1 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
-                                    placeholder="Auto"
-                                />
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    {/* Sync Zoom Toggle */}
-                    <div className="flex flex-col items-center justify-center gap-1 border border-white/10 rounded-[4px] px-2 py-1 h-full">
-                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Sync Zoom</span>
-                        <button
-                            disabled={selectedColumns.length === 0}
-                            onClick={() => {
-                                const nextState = !isSyncZoom;
-                                setIsSyncZoom(nextState);
-
-                                // Immediate Sync if turning ON and a chart is selected
-                                if (nextState && selectedChart) {
-                                    const activeZoom = zoomSettings[selectedChart];
-                                    if (activeZoom) {
-                                        setZoomSettings(prev => {
-                                            const next = { ...prev };
-                                            allColumns.forEach(c => {
-                                                if (c !== selectedChart) {
-                                                    const existing = next[c] || { minX: '', maxX: '', minY: '', maxY: '' };
-                                                    next[c] = {
-                                                        ...existing,
-                                                        minX: activeZoom.minX,
-                                                        maxX: activeZoom.maxX
-                                                    };
-                                                }
-                                            });
-                                            return next;
-                                        });
-                                    }
-                                }
-                            }}
-                            className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isSyncZoom ? 'bg-sky-500' : 'bg-slate-700'}`}
-                        >
-                            <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${isSyncZoom ? 'translate-x-full' : 'translate-x-0'}`}></div>
-                        </button>
-                    </div>
-
-                    {/* Limit Lines Internal Controls (With Toggle & Sidebar Layout) */}
-                    <fieldset className={`border ${selectedChart ? 'border-sky-500/50' : 'border-white/10 opacity-50'} rounded-[4px] px-3 pb-2 pt-1 flex flex-col justify-center gap-2 group hover:border-white/20 transition-all`}>
-                        <legend className={`px-1 text-[9px] font-bold uppercase tracking-wider ${selectedChart ? 'text-sky-400' : 'text-slate-600'}`}>
-                            {selectedChart ? `Limits: ${selectedChart}` : 'Select a Chart'}
-                        </legend>
-
-                        {/* Top Row: Toggle */}
-                        <div className="flex items-center gap-2 mb-0.5">
-                            <div className="flex items-center gap-2">
-                                <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">{currentLimit.enabled ? 'Hide' : 'Show'}</span>
-                                <button
-                                    onClick={() => updateLimit('enabled', !currentLimit.enabled)}
-                                    disabled={!selectedChart}
-                                    className={`
-                                        w-8 h-4 rounded-full p-0.5 flex items-center transition-colors
-                                        ${currentLimit.enabled ? 'bg-sky-500' : 'bg-slate-700'}
-                                        disabled:opacity-50 disabled:cursor-not-allowed
-                                    `}
-                                >
-                                    <div className={`
-                                        w-3 h-3 rounded-full bg-white shadow-sm transition-transform
-                                        ${currentLimit.enabled ? 'translate-x-full' : 'translate-x-0'}
-                                    `}></div>
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* Bottom Row: Min & Max Inputs Side-by-Side */}
-                        <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-2">
-                                <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">Min L</label>
-                                <input
-                                    type="number"
-                                    value={currentLimit.minLimit}
-                                    onChange={(e) => updateLimit('minLimit', e.target.value)}
-                                    disabled={!selectedChart || !currentLimit.enabled}
-                                    className="w-16 h-5 bg-slate-800 border border-white/10 rounded-[2px] px-1 text-[10px] text-white focus:border-red-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-30 disabled:cursor-not-allowed"
-                                    placeholder="None"
-                                />
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider w-9 text-left">Max L</label>
-                                <input
-                                    type="number"
-                                    value={currentLimit.maxLimit}
-                                    onChange={(e) => updateLimit('maxLimit', e.target.value)}
-                                    disabled={!selectedChart || !currentLimit.enabled}
-                                    className="w-16 h-5 bg-slate-800 border border-white/10 rounded-[2px] px-1 text-[10px] text-white focus:border-green-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-30 disabled:cursor-not-allowed"
-                                    placeholder="None"
-                                />
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    {/* Action Buttons: Maximize & Reset */}
-                    <div className="flex flex-col gap-2">
-                        <button
-                            onClick={() => setIsMaximized(true)}
+                {/* Zoom Internal Controls */}
+                <fieldset className={`border ${selectedChart ? 'border-sky-500/50' : 'border-white/10 opacity-50'} rounded-[4px] px-2 pb-3 pt-2 flex flex-col gap-2 group hover:border-white/20 transition-all`}>
+                    <legend className={`px-1 text-[9px] font-bold uppercase tracking-wider ${selectedChart ? 'text-sky-400' : 'text-slate-600'}`}>
+                        {selectedChart ? `Zoom` : 'Select Chart'}
+                    </legend>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Min X</label>
+                        <input
+                            type="number"
+                            value={currentZoom.minX}
+                            onChange={(e) => updateZoom('minX', e.target.value)}
                             disabled={!selectedChart}
-                            className="h-6 px-3 bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold uppercase tracking-wider rounded-[4px] disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-sky-900/20"
-                        >
-                            Maximize
-                        </button>
+                            className="w-full h-6 bg-slate-800 border border-white/10 rounded-[2px] px-2 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
+                            placeholder="Auto"
+                        />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Max X</label>
+                        <input
+                            type="number"
+                            value={currentZoom.maxX}
+                            onChange={(e) => updateZoom('maxX', e.target.value)}
+                            disabled={!selectedChart}
+                            className="w-full h-6 bg-slate-800 border border-white/10 rounded-[2px] px-2 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
+                            placeholder="Auto"
+                        />
+                    </div>
+                    <div className="w-full h-px bg-white/10 my-1"></div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Min Y</label>
+                        <input
+                            type="number"
+                            value={currentZoom.minY}
+                            onChange={(e) => updateZoom('minY', e.target.value)}
+                            disabled={!selectedChart}
+                            className="w-full h-6 bg-slate-800 border border-white/10 rounded-[2px] px-2 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
+                            placeholder="Auto"
+                        />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Max Y</label>
+                        <input
+                            type="number"
+                            value={currentZoom.maxY}
+                            onChange={(e) => updateZoom('maxY', e.target.value)}
+                            disabled={!selectedChart}
+                            className="w-full h-6 bg-slate-800 border border-white/10 rounded-[2px] px-2 text-[10px] text-white focus:border-sky-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-50 disabled:cursor-not-allowed"
+                            placeholder="Auto"
+                        />
+                    </div>
+                </fieldset>
+
+                {/* Limit Lines Internal Controls */}
+                <fieldset className={`border ${selectedChart ? 'border-sky-500/50' : 'border-white/10 opacity-50'} rounded-[4px] px-2 pb-3 pt-2 flex flex-col gap-2 group hover:border-white/20 transition-all`}>
+                    <legend className={`px-1 text-[9px] font-bold uppercase tracking-wider ${selectedChart ? 'text-sky-400' : 'text-slate-600'}`}>
+                        {selectedChart ? `Limits` : 'Select Chart'}
+                    </legend>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                        <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">{currentLimit.enabled ? 'Hide' : 'Show'}</span>
                         <button
-                            onClick={resetAllCharts}
-                            disabled={datasets.length === 0}
-                            className="h-6 px-3 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-[4px] disabled:opacity-50 disabled:cursor-not-allowed transition-colors border border-white/10"
+                            onClick={() => updateLimit('enabled', !currentLimit.enabled)}
+                            disabled={!selectedChart}
+                            className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors ${currentLimit.enabled ? 'bg-sky-500' : 'bg-slate-700'} disabled:opacity-50 disabled:cursor-not-allowed`}
                         >
-                            Reset
+                            <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${currentLimit.enabled ? 'translate-x-full' : 'translate-x-0'}`}></div>
                         </button>
                     </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Min L</label>
+                        <input
+                            type="number"
+                            value={currentLimit.minLimit}
+                            onChange={(e) => updateLimit('minLimit', e.target.value)}
+                            disabled={!selectedChart || !currentLimit.enabled}
+                            className="w-full h-6 bg-slate-800 border border-white/10 rounded-[2px] px-2 text-[10px] text-white focus:border-red-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-30 disabled:cursor-not-allowed"
+                            placeholder="None"
+                        />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Max L</label>
+                        <input
+                            type="number"
+                            value={currentLimit.maxLimit}
+                            onChange={(e) => updateLimit('maxLimit', e.target.value)}
+                            disabled={!selectedChart || !currentLimit.enabled}
+                            className="w-full h-6 bg-slate-800 border border-white/10 rounded-[2px] px-2 text-[10px] text-white focus:border-green-500 focus:outline-none placeholder-slate-600 text-right disabled:opacity-30 disabled:cursor-not-allowed"
+                            placeholder="None"
+                        />
+                    </div>
+                </fieldset>
 
-                </header>
+                {/* Sync Zoom Toggle */}
+                <div className="flex flex-col items-center justify-center gap-2 border border-white/10 rounded-[4px] px-2 py-3 w-full">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Sync Zoom</span>
+                    <button
+                        disabled={selectedColumns.length === 0}
+                        onClick={() => {
+                            const nextState = !isSyncZoom;
+                            setIsSyncZoom(nextState);
+                            if (nextState && selectedChart) {
+                                const activeZoom = zoomSettings[selectedChart];
+                                if (activeZoom) {
+                                    setZoomSettings(prev => {
+                                        const next = { ...prev };
+                                        allColumns.forEach(c => {
+                                            if (c !== selectedChart) {
+                                                const existing = next[c] || { minX: '', maxX: '', minY: '', maxY: '' };
+                                                next[c] = {
+                                                    ...existing,
+                                                    minX: activeZoom.minX,
+                                                    maxX: activeZoom.maxX
+                                                };
+                                            }
+                                        });
+                                        return next;
+                                    });
+                                }
+                            }
+                        }}
+                        className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isSyncZoom ? 'bg-sky-500' : 'bg-slate-700'}`}
+                    >
+                        <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${isSyncZoom ? 'translate-x-full' : 'translate-x-0'}`}></div>
+                    </button>
+                </div>
+
+                {/* Action Buttons: Maximize & Reset */}
+                <div className="flex flex-col gap-2 mt-auto">
+                    <button
+                        onClick={() => setIsMaximized(true)}
+                        disabled={!selectedChart}
+                        className="w-full py-2 bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold uppercase tracking-wider rounded-[4px] disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-sky-900/20"
+                    >
+                        Maximize
+                    </button>
+                    <button
+                        onClick={resetAllCharts}
+                        disabled={datasets.length === 0}
+                        className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-[4px] disabled:opacity-50 disabled:cursor-not-allowed transition-colors border border-white/10"
+                    >
+                        Reset
+                    </button>
+                </div>
+            </aside>
+
+            {/* Main Content Area */}
+            <div className="flex flex-col flex-1 min-w-0 bg-slate-950">
 
                 {/* 3. Tab Navigation Bar */}
                 {totalPages > 1 && (
