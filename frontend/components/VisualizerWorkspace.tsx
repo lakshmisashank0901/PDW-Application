@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
     Chart as ChartJS,
     LinearScale, PointElement, LineElement, Tooltip, Legend
@@ -79,6 +79,13 @@ const limitLinesPlugin = {
     }
 };
 
+type WorkspaceState = {
+    datasets: Dataset[];
+    selectedColumns: string[];
+    zoomSettings: Record<string, { minX: string, maxX: string, minY: string, maxY: string }>;
+    isSyncZoom: boolean;
+};
+
 export default function VisualizerWorkspace() {
     const [datasets, setDatasets] = useState<Dataset[]>([]);
     const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
@@ -103,6 +110,44 @@ export default function VisualizerWorkspace() {
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isSyncZoom, setIsSyncZoom] = useState(false);
+
+    // History State
+    const [pastStates, setPastStates] = useState<WorkspaceState[]>([]);
+    const [futureStates, setFutureStates] = useState<WorkspaceState[]>([]);
+
+    const saveState = useCallback(() => {
+        setPastStates(prev => {
+            const newState = { datasets, selectedColumns, zoomSettings, isSyncZoom };
+            // Optional: limit history size to 50
+            const updated = [...prev, newState];
+            return updated.length > 50 ? updated.slice(updated.length - 50) : updated;
+        });
+        setFutureStates([]);
+    }, [datasets, selectedColumns, zoomSettings, isSyncZoom]);
+
+    const undo = useCallback(() => {
+        if (pastStates.length === 0) return;
+        const previousState = pastStates[pastStates.length - 1];
+        setPastStates(prev => prev.slice(0, prev.length - 1));
+        setFutureStates(prev => [{ datasets, selectedColumns, zoomSettings, isSyncZoom }, ...prev]);
+        
+        setDatasets(previousState.datasets);
+        setSelectedColumns(previousState.selectedColumns);
+        setZoomSettings(previousState.zoomSettings);
+        setIsSyncZoom(previousState.isSyncZoom);
+    }, [pastStates, datasets, selectedColumns, zoomSettings, isSyncZoom]);
+
+    const redo = useCallback(() => {
+        if (futureStates.length === 0) return;
+        const nextState = futureStates[0];
+        setFutureStates(prev => prev.slice(1));
+        setPastStates(prev => [...prev, { datasets, selectedColumns, zoomSettings, isSyncZoom }]);
+        
+        setDatasets(nextState.datasets);
+        setSelectedColumns(nextState.selectedColumns);
+        setZoomSettings(nextState.zoomSettings);
+        setIsSyncZoom(nextState.isSyncZoom);
+    }, [futureStates, datasets, selectedColumns, zoomSettings, isSyncZoom]);
 
     const CHARTS_PER_PAGE = 3;
     const totalPages = Math.ceil(selectedColumns.length / CHARTS_PER_PAGE) || 1;
@@ -238,6 +283,7 @@ export default function VisualizerWorkspace() {
 
             const results = await Promise.all(uploadPromises);
             
+            saveState();
             setDatasets(prev => {
                 const newDatasets = results.map((result, i) => ({
                     ...result,
@@ -260,10 +306,12 @@ export default function VisualizerWorkspace() {
     const removeDataset = (id: string, fileUrl?: string) => {
         // Clean up object URL if using one
         if (fileUrl) URL.revokeObjectURL(fileUrl);
+        saveState();
         setDatasets(prev => prev.filter(d => d.id !== id));
     };
 
     const toggleColumn = (col: string) => {
+        saveState();
         setSelectedColumns(prev => {
             const newState = prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col];
             return newState;
@@ -275,10 +323,11 @@ export default function VisualizerWorkspace() {
     };
 
     const clearAll = () => {
-        // Revoke all URLs
+        if (!confirm('Are you sure you want to remove all files?')) return;
         datasets.forEach(ds => {
             if (ds.fileUrl) URL.revokeObjectURL(ds.fileUrl);
         });
+        saveState();
         setDatasets([]);
         setSelectedColumns([]);
         setCurrentPage(1);
@@ -289,6 +338,7 @@ export default function VisualizerWorkspace() {
     };
 
     const resetAllCharts = () => {
+        saveState();
         setZoomSettings({});
         setLimitSettings({});
     };
@@ -321,6 +371,7 @@ export default function VisualizerWorkspace() {
     // Zoom Helpers
     const updateZoom = (field: 'minX' | 'maxX' | 'minY' | 'maxY', value: string) => {
         if (!selectedChart) return;
+        saveState();
         setZoomSettings(prev => ({
             ...prev,
             [selectedChart]: {
@@ -444,6 +495,7 @@ export default function VisualizerWorkspace() {
                             const { min: xMin, max: xMax } = chart.scales.x;
                             const { min: yMin, max: yMax } = chart.scales.y;
 
+                            saveState();
                             setZoomSettings(prev => {
                                 const newSettings = { ...prev };
 
@@ -515,6 +567,7 @@ export default function VisualizerWorkspace() {
                 }
                 onContextMenu={(e) => e.preventDefault()}
                 onDoubleClick={() => {
+                    saveState();
                     setZoomSettings(prev => {
                         const next = { ...prev };
 
@@ -599,6 +652,27 @@ export default function VisualizerWorkspace() {
                     )}
                 </div>
 
+                {/* Navigation / History Buttons */}
+                <div className="flex items-center justify-between px-4 py-2 border-b border-white/5 bg-slate-800/30">
+                    <button 
+                        onClick={undo}
+                        disabled={pastStates.length === 0}
+                        className="p-1.5 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-slate-400 hover:text-sky-400"
+                        title="Undo (Back)"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                    </button>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">History</span>
+                    <button 
+                        onClick={redo}
+                        disabled={futureStates.length === 0}
+                        className="p-1.5 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-slate-400 hover:text-sky-400"
+                        title="Redo (Front)"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                    </button>
+                </div>
+
                 <div className="flex-1 p-4 overflow-y-auto custom-scrollbar">
                     {/* Upload New File Button */}
                     <div
@@ -660,8 +734,8 @@ export default function VisualizerWorkspace() {
                             <div className="flex items-center justify-between mb-2">
                                 <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Parameters</h4>
                                 <div className="flex gap-2">
-                                    <button onClick={() => setSelectedColumns(allColumns)} className="text-[10px] text-sky-500 hover:text-sky-400">All</button>
-                                    <button onClick={() => setSelectedColumns([])} className="text-[10px] text-slate-500 hover:text-slate-400">None</button>
+                                    <button onClick={() => { saveState(); setSelectedColumns(allColumns); }} className="text-[10px] text-sky-500 hover:text-sky-400">All</button>
+                                    <button onClick={() => { saveState(); setSelectedColumns([]); }} className="text-[10px] text-slate-500 hover:text-slate-400">None</button>
                                 </div>
                             </div>
 
@@ -800,6 +874,7 @@ export default function VisualizerWorkspace() {
                     <button
                         disabled={selectedColumns.length === 0}
                         onClick={() => {
+                            saveState();
                             const nextState = !isSyncZoom;
                             setIsSyncZoom(nextState);
                             if (nextState && selectedChart) {
