@@ -208,7 +208,8 @@ export default function RadarGrid() {
         };
 
         try {
-            const response = await fetch('http://localhost:8000/generate', {
+            const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            const response = await fetch(`${apiUrl}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
