@@ -171,12 +171,15 @@ import io
 
 @app.post("/visualize/upload")
 async def upload_file_for_visualization(file: UploadFile = File(...)):
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        return {"error": "Invalid file format. Please upload an Excel file."}
+    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
+        return {"error": "Invalid file format. Please upload an Excel or CSV file."}
     
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(contents))
+        else:
+            df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
         
         # Replace NaN with None (JSON null)
         df = df.where(pd.notnull(df), None)
