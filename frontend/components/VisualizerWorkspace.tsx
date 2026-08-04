@@ -84,6 +84,7 @@ type WorkspaceState = {
     selectedColumns: string[];
     zoomSettings: Record<string, { minX: string, maxX: string, minY: string, maxY: string }>;
     isSyncZoom: boolean;
+    hideDummyPD: boolean;
 };
 
 export default function VisualizerWorkspace() {
@@ -110,6 +111,50 @@ export default function VisualizerWorkspace() {
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isSyncZoom, setIsSyncZoom] = useState(false);
+    const [hideDummyPD, setHideDummyPD] = useState(false);
+
+    // Sidebar Width State
+    const [sidebarWidth, setSidebarWidth] = useState(200);
+
+    const handleSidebarResize = (e: React.MouseEvent) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = sidebarWidth;
+
+        const handleMouseMove = (moveEvent: MouseEvent) => {
+            const newWidth = Math.max(150, Math.min(500, startWidth + (moveEvent.clientX - startX)));
+            setSidebarWidth(newWidth);
+        };
+
+        const handleMouseUp = () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    };
+
+    const [rightSidebarWidth, setRightSidebarWidth] = useState(140);
+
+    const handleRightSidebarResize = (e: React.MouseEvent) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = rightSidebarWidth;
+
+        const handleMouseMove = (moveEvent: MouseEvent) => {
+            const newWidth = Math.max(100, Math.min(400, startWidth + (moveEvent.clientX - startX)));
+            setRightSidebarWidth(newWidth);
+        };
+
+        const handleMouseUp = () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    };
 
     // History State
     const [pastStates, setPastStates] = useState<WorkspaceState[]>([]);
@@ -117,37 +162,39 @@ export default function VisualizerWorkspace() {
 
     const saveState = useCallback(() => {
         setPastStates(prev => {
-            const newState = { datasets, selectedColumns, zoomSettings, isSyncZoom };
+            const newState = { datasets, selectedColumns, zoomSettings, isSyncZoom, hideDummyPD };
             // Optional: limit history size to 50
             const updated = [...prev, newState];
             return updated.length > 50 ? updated.slice(updated.length - 50) : updated;
         });
         setFutureStates([]);
-    }, [datasets, selectedColumns, zoomSettings, isSyncZoom]);
+    }, [datasets, selectedColumns, zoomSettings, isSyncZoom, hideDummyPD]);
 
     const undo = useCallback(() => {
         if (pastStates.length === 0) return;
         const previousState = pastStates[pastStates.length - 1];
         setPastStates(prev => prev.slice(0, prev.length - 1));
-        setFutureStates(prev => [{ datasets, selectedColumns, zoomSettings, isSyncZoom }, ...prev]);
+        setFutureStates(prev => [{ datasets, selectedColumns, zoomSettings, isSyncZoom, hideDummyPD }, ...prev]);
         
         setDatasets(previousState.datasets);
         setSelectedColumns(previousState.selectedColumns);
         setZoomSettings(previousState.zoomSettings);
         setIsSyncZoom(previousState.isSyncZoom);
-    }, [pastStates, datasets, selectedColumns, zoomSettings, isSyncZoom]);
+        setHideDummyPD(previousState.hideDummyPD ?? false);
+    }, [pastStates, datasets, selectedColumns, zoomSettings, isSyncZoom, hideDummyPD]);
 
     const redo = useCallback(() => {
         if (futureStates.length === 0) return;
         const nextState = futureStates[0];
         setFutureStates(prev => prev.slice(1));
-        setPastStates(prev => [...prev, { datasets, selectedColumns, zoomSettings, isSyncZoom }]);
+        setPastStates(prev => [...prev, { datasets, selectedColumns, zoomSettings, isSyncZoom, hideDummyPD }]);
         
         setDatasets(nextState.datasets);
         setSelectedColumns(nextState.selectedColumns);
         setZoomSettings(nextState.zoomSettings);
         setIsSyncZoom(nextState.isSyncZoom);
-    }, [futureStates, datasets, selectedColumns, zoomSettings, isSyncZoom]);
+        setHideDummyPD(nextState.hideDummyPD ?? false);
+    }, [futureStates, datasets, selectedColumns, zoomSettings, isSyncZoom, hideDummyPD]);
 
     const CHARTS_PER_PAGE = 3;
     const totalPages = Math.ceil(selectedColumns.length / CHARTS_PER_PAGE) || 1;
@@ -399,16 +446,29 @@ export default function VisualizerWorkspace() {
     const currentLimit = selectedChart ? (limitSettings[selectedChart] || { minLimit: '', maxLimit: '', enabled: true }) : { minLimit: '', maxLimit: '', enabled: true };
 
     const renderChart = (col: string, isFullSize: boolean = false) => {
-        const seriesDatasets = datasets.filter(ds => ds.columns.includes(col)).map(ds => ({
-            label: ds.filename,
-            data: ds.data.map(d => ({ x: d.index, y: d[col] })),
-            backgroundColor: ds.color,
-            borderColor: ds.color,
-            borderWidth: 0,
-            pointRadius: isFullSize ? 3 : 2.5,
-            pointHoverRadius: 5,
-            showLine: false,
-        }));
+        const seriesDatasets = datasets.filter(ds => ds.columns.includes(col)).map(ds => {
+            let activeData = ds.data;
+            if (hideDummyPD) {
+                const pdTypeCol = ds.columns.find(c => {
+                    const norm = c.toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return norm === 'pdtype';
+                });
+                if (pdTypeCol) {
+                    activeData = activeData.filter(d => parseInt(String(d[pdTypeCol]), 10) !== 15);
+                }
+            }
+
+            return {
+                label: ds.filename,
+                data: activeData.map(d => ({ x: d.index, y: d[col] })),
+                backgroundColor: ds.color,
+                borderColor: ds.color,
+                borderWidth: 0,
+                pointRadius: isFullSize ? 3 : 2.5,
+                pointHoverRadius: 5,
+                showLine: false,
+            };
+        });
 
         if (seriesDatasets.length === 0) return null;
 
@@ -640,7 +700,18 @@ export default function VisualizerWorkspace() {
         <div className="flex h-full w-full bg-slate-900 text-slate-200 font-sans overflow-hidden">
 
             {/* 1. Secondary Sidebar (Left, Full Height) */}
-            <aside className="w-[200px] shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20">
+            <aside 
+                style={{ width: `${sidebarWidth}px` }} 
+                className="shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20 relative"
+            >
+                {/* Drag Handle */}
+                <div
+                    onMouseDown={handleSidebarResize}
+                    className="absolute top-0 -right-1.5 w-3 h-full cursor-col-resize hover:bg-sky-500/20 z-30 transition-colors flex items-center justify-center group"
+                >
+                    <div className="w-0.5 h-8 bg-slate-600 rounded-full group-hover:bg-sky-500"></div>
+                </div>
+
                 <div className="h-[60px] flex items-center px-4 justify-between">
                     <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Data Sources</h3>
                     {datasets.length > 0 && (
@@ -742,8 +813,8 @@ export default function VisualizerWorkspace() {
 
                             <div className="space-y-1 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                                 {allColumns.map((col) => (
-                                    <label key={col} className="flex items-center gap-3 p-2 rounded hover:bg-white/5 cursor-pointer group transition-colors">
-                                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${selectedColumns.includes(col) ? 'bg-sky-500 border-sky-500' : 'border-slate-600 group-hover:border-slate-400'}`}>
+                                    <label key={col} className="flex items-center gap-3 p-2 rounded hover:bg-white/5 cursor-pointer group transition-colors overflow-hidden">
+                                        <div className={`w-4 h-4 shrink-0 rounded border flex items-center justify-center transition-all ${selectedColumns.includes(col) ? 'bg-sky-500 border-sky-500' : 'border-slate-600 group-hover:border-slate-400'}`}>
                                             {selectedColumns.includes(col) && (
                                                 <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
                                             )}
@@ -754,7 +825,7 @@ export default function VisualizerWorkspace() {
                                             onChange={() => toggleColumn(col)}
                                             className="hidden"
                                         />
-                                        <span className={`text-xs ${selectedColumns.includes(col) ? 'text-sky-300 font-bold' : 'text-slate-400'}`}>{col}</span>
+                                        <span className={`text-xs truncate ${selectedColumns.includes(col) ? 'text-sky-300 font-bold' : 'text-slate-400'}`} title={col}>{col}</span>
                                     </label>
                                 ))}
                             </div>
@@ -773,7 +844,18 @@ export default function VisualizerWorkspace() {
             </aside>
 
             {/* 2. Second Sidebar (Chart Controls) */}
-            <aside className="w-[140px] shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20 overflow-y-auto custom-scrollbar p-3 gap-4">
+            <aside 
+                style={{ width: `${rightSidebarWidth}px` }}
+                className="shrink-0 bg-slate-900 border-r border-white/5 flex flex-col z-20 overflow-y-auto custom-scrollbar p-3 gap-4 relative"
+            >
+                {/* Drag Handle */}
+                <div
+                    onMouseDown={handleRightSidebarResize}
+                    className="absolute top-0 -right-1.5 w-3 h-full cursor-col-resize hover:bg-sky-500/20 z-30 transition-colors flex items-center justify-center group"
+                >
+                    <div className="w-0.5 h-8 bg-slate-600 rounded-full group-hover:bg-sky-500"></div>
+                </div>
+
                 <div className="flex items-center justify-between mb-1 border-b border-white/5 pb-2">
                     <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-tight">Chart Controls</h3>
                 </div>
@@ -869,9 +951,23 @@ export default function VisualizerWorkspace() {
                     </div>
                 </fieldset>
 
+                {/* Hide Dummy PD Toggle */}
+                <div className="flex flex-col items-center justify-center gap-2 border border-white/10 rounded-[4px] px-2 py-3 w-full text-center">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Hide Dummy PD</span>
+                    <button
+                        onClick={() => {
+                            saveState();
+                            setHideDummyPD(!hideDummyPD);
+                        }}
+                        className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors ${hideDummyPD ? 'bg-sky-500' : 'bg-slate-700'}`}
+                    >
+                        <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${hideDummyPD ? 'translate-x-full' : 'translate-x-0'}`}></div>
+                    </button>
+                </div>
+
                 {/* Sync Zoom Toggle */}
                 <div className="flex flex-col items-center justify-center gap-2 border border-white/10 rounded-[4px] px-2 py-3 w-full">
-                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Sync Zoom</span>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider text-center">Sync Zoom</span>
                     <button
                         disabled={selectedColumns.length === 0}
                         onClick={() => {
