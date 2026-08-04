@@ -23,7 +23,6 @@ export default function Home() {
                 <div className="w-2 h-2 rounded-full bg-sky-500 animate-pulse"></div>
                 PDW <span className="text-sky-500">Simulator</span>
               </h1>
-              {/* <span className="text-[10px] font-mono text-slate-500 pl-4 block mt-1">V3.2 // ONLINE</span> */}
             </div>
           )}
           {isSidebarCollapsed && (
