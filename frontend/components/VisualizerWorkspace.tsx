@@ -3,9 +3,12 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
     Chart as ChartJS,
-    LinearScale, PointElement, LineElement, Tooltip, Legend
+    LinearScale, PointElement, LineElement, Tooltip, Legend,
+    type ActiveElement, type ChartEvent, type ChartOptions, type ChartType, type Plugin
 } from 'chart.js';
+import type {} from 'chartjs-plugin-zoom'; // type augmentation for options.plugins.zoom
 import { Scatter } from 'react-chartjs-2';
+import { API_URL, errorMessage, readApiError } from '@/lib/api';
 
 ChartJS.register(LinearScale, PointElement, LineElement, Tooltip, Legend);
 
@@ -14,10 +17,6 @@ if (typeof window !== 'undefined') {
         ChartJS.register(plugin.default);
     });
 }
-
-// ... (existing code)
-
-// ... (existing code, removed corruption)
 
 // Predefined colors for distinct files
 const FILE_COLORS = [
@@ -29,19 +28,54 @@ const FILE_COLORS = [
     '#f87171', // Red-400
 ];
 
+type CellValue = string | number | boolean | null;
+type Row = Record<string, CellValue> & { index: number };
+
 interface Dataset {
     id: string;
     filename: string;
-    data: any[];
+    data: Row[];
     columns: string[];
     color: string;
     fileUrl?: string; // For downloading/opening the file
 }
 
+type LimitOptions = { minLimit: string, maxLimit: string, enabled: boolean };
+
+declare module 'chart.js' {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- must match chart.js's declaration
+    interface PluginOptionsByType<TType extends ChartType> {
+        limitLines?: LimitOptions;
+    }
+}
+
+// Rows flagged as dummy PDs: PD_Type/PdType == 15 (Book1-style) or Pd == "DummyPD" (QDR captures)
+const findDummyPdCheck = (columns: string[]): ((row: Row) => boolean) | null => {
+    const norm = (c: string) => c.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const pdTypeCol = columns.find(c => norm(c) === 'pdtype');
+    if (pdTypeCol) return row => parseInt(String(row[pdTypeCol]), 10) === 15;
+    const pdCol = columns.find(c => norm(c) === 'pd');
+    if (pdCol) return row => String(row[pdCol]).trim().toLowerCase() === 'dummypd';
+    return null;
+};
+
+// Data points are sorted by x (row index), so binary search for the hovered one
+const findPointIndex = (points: { x: number }[], x: number): number => {
+    let lo = 0;
+    let hi = points.length - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (points[mid].x === x) return mid;
+        if (points[mid].x < x) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+};
+
 // Custom Plugin for Limit Lines
-const limitLinesPlugin = {
+const limitLinesPlugin: Plugin<'scatter', LimitOptions> = {
     id: 'limitLines',
-    afterDatasetsDraw(chart: any, args: any, options: any) {
+    afterDatasetsDraw(chart, _args, options) {
         if (options.enabled === false) return;
 
         const { ctx, chartArea: { left, right }, scales: { y } } = chart;
@@ -107,7 +141,7 @@ export default function VisualizerWorkspace() {
 
     // Sync Hover State
     const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-    const chartRefs = useRef<Record<string, any>>({});
+    const chartRefs = useRef<Record<string, ChartJS<'scatter'>>>({});
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [isSyncZoom, setIsSyncZoom] = useState(false);
@@ -218,59 +252,29 @@ export default function VisualizerWorkspace() {
     useEffect(() => {
         if (!isSyncZoom) return;
 
-        Object.entries(chartRefs.current).forEach(([col, chart]) => {
-            if (!chart || chart.destroyed || !chart.canvas) return;
+        Object.values(chartRefs.current).forEach((chart) => {
+            if (!chart || !chart.canvas) return;
 
             // If no index is hovered, clear highlights
             if (hoveredIndex === null) {
-                chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+                chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
                 chart.setActiveElements([]);
                 chart.update('none');
                 return;
             }
 
-            // Find dataset index for this column (assuming 1 dataset per scatter for now, or match index)
-            // Our seriesDatasets map data to {x: index, y: value}.
-            // We want to highlight the point where x === hoveredIndex.
+            // Highlight the point at x === hoveredIndex in every dataset of this chart
+            const activeElements: { datasetIndex: number, index: number }[] = [];
 
-            const datasetIndex = 0; // We typically have one visible dataset per chart in this setup?
-            // Actually renderChart creates multiple datasets if multiple files have this column.
-            // But let's assume we want to highlight all points at this X across all datasets in this chart.
-
-            const activeElements: any[] = [];
-
-            chart.data.datasets.forEach((dataset: any, dIndex: number) => {
-                // Find the data point with x === hoveredIndex
-                // Since data is sorted by index (it's 1-based index), we might just look it up.
-                // data is {x, y}. 
-                // data array index might correspond to (hoveredIndex - 1) if contiguous?
-                // Let's search to be safe or map if slow. Since it's scatter, linear search is okay for small N, 
-                // but optimization: data[hoveredIndex - 1] might work if index is truly just 1..N
-
-                // Fast lookup assuming data[i].x == i + 1
-                const point = dataset.data.find((d: any) => d.x === hoveredIndex);
-                if (point) {
-                    // We need the internal Chart.js element index.
-                    // Chart.js stores parsed data. We need to find the element index.
-                    // For 'scatter', dataset.data matches meta.data?
-
-                    const meta = chart.getDatasetMeta(dIndex);
-                    // Find index in meta.data that has parsed.x == hoveredIndex
-                    // This can be internal index.
-
-                    // Actually, 'dataset.data' passed to chart properties might be different from internal '_parsed'.
-                    // Use interaction mode logic or simple index matching if valid.
-
-                    // Optimization: If we trust x is the array index + 1:
-                    const internalIndex = point.x - 1; // Assuming 0-based array and 1-based IDs
-                    if (meta.data[internalIndex]) {
-                        activeElements.push({ datasetIndex: dIndex, index: internalIndex });
-                    }
+            chart.data.datasets.forEach((dataset, dIndex) => {
+                const index = findPointIndex(dataset.data as { x: number }[], hoveredIndex);
+                if (index !== -1) {
+                    activeElements.push({ datasetIndex: dIndex, index });
                 }
             });
 
             if (activeElements.length > 0) {
-                chart.tooltip.setActiveElements(activeElements, { x: 0, y: 0 }); // Coords ignored for programmatic
+                chart.tooltip?.setActiveElements(activeElements, { x: 0, y: 0 }); // Coords ignored for programmatic
                 chart.setActiveElements(activeElements);
                 chart.update('none'); // Update visual style without full re-render
             }
@@ -300,22 +304,18 @@ export default function VisualizerWorkspace() {
                 const formData = new FormData();
                 formData.append('file', file);
 
-                const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-                const response = await fetch(`${apiUrl}/visualize/upload`, {
+                const response = await fetch(`${API_URL}/visualize/upload`, {
                     method: 'POST',
                     body: formData,
                 });
 
                 if (!response.ok) {
-                    throw new Error(`Upload failed for ${file.name}`);
+                    throw new Error(`${file.name}: ${await readApiError(response, 'Upload failed')}`);
                 }
 
-                const result = await response.json();
-                if (result.error) {
-                    throw new Error(result.error);
-                }
+                const result: { filename: string, columns: string[], data: Record<string, CellValue>[] } = await response.json();
 
-                const chartData = result.data.map((item: any, index: number) => ({
+                const chartData: Row[] = result.data.map((item, index) => ({
                     ...item,
                     index: index + 1
                 }));
@@ -343,9 +343,9 @@ export default function VisualizerWorkspace() {
             if (datasets.length === 0 && results.length > 0) {
                 setSelectedColumns([]);
             }
-        } catch (error: any) {
+        } catch (error) {
             console.error('Error uploading files:', error);
-            alert('Failed to upload files: ' + error.message);
+            alert('Failed to upload files: ' + errorMessage(error));
         } finally {
             setIsUploading(false);
         }
@@ -448,19 +448,15 @@ export default function VisualizerWorkspace() {
     const renderChart = (col: string, isFullSize: boolean = false) => {
         const seriesDatasets = datasets.filter(ds => ds.columns.includes(col)).map(ds => {
             let activeData = ds.data;
-            if (hideDummyPD) {
-                const pdTypeCol = ds.columns.find(c => {
-                    const norm = c.toLowerCase().replace(/[^a-z0-9]/g, '');
-                    return norm === 'pdtype';
-                });
-                if (pdTypeCol) {
-                    activeData = activeData.filter(d => parseInt(String(d[pdTypeCol]), 10) !== 15);
-                }
+            const isDummyPD = hideDummyPD ? findDummyPdCheck(ds.columns) : null;
+            if (isDummyPD) {
+                activeData = activeData.filter(d => !isDummyPD(d));
             }
 
             return {
                 label: ds.filename,
-                data: activeData.map(d => ({ x: d.index, y: d[col] })),
+                // Non-numeric cells (e.g. "CW", "Bad") can't be plotted on a linear axis
+                data: activeData.map(d => ({ x: d.index, y: typeof d[col] === 'number' ? d[col] : null })),
                 backgroundColor: ds.color,
                 borderColor: ds.color,
                 borderWidth: 0,
@@ -486,24 +482,27 @@ export default function VisualizerWorkspace() {
 
         seriesDatasets.forEach(ds => {
             ds.data.forEach(d => {
-                if (d.x >= xMin && d.x <= xMax && d.y >= yMin && d.y <= yMax) {
+                if (d.y !== null && d.x >= xMin && d.x <= xMax && d.y >= yMin && d.y <= yMax) {
                     visiblePoints++;
                 }
             });
         });
 
-        const options: any = {
+        const options: ChartOptions<'scatter'> = {
             responsive: true,
             maintainAspectRatio: false,
             animation: false as const,
-            onHover: (e: any, elements: any[], chart: any) => {
+            // Data is already {x, y} sorted by x, so skip Chart.js parsing for speed on large captures
+            parsing: false,
+            normalized: true,
+            onHover: (_e: ChartEvent, elements: ActiveElement[], chart: ChartJS) => {
                 if (!isSyncZoom) return;
 
                 if (elements && elements.length > 0) {
                     const first = elements[0];
                     const datasetIndex = first.datasetIndex;
                     const dataIndex = first.index;
-                    const point = chart.data.datasets[datasetIndex].data[dataIndex];
+                    const point = chart.data.datasets[datasetIndex].data[dataIndex] as { x: number } | undefined;
 
                     if (point && point.x !== hoveredIndex) {
                         setHoveredIndex(point.x);
@@ -525,14 +524,14 @@ export default function VisualizerWorkspace() {
                     position: 'bottom' as const,
                     min: zoomConfig.minX !== '' ? Number(zoomConfig.minX) : undefined,
                     max: zoomConfig.maxX !== '' ? Number(zoomConfig.maxX) : undefined,
-                    grid: { color: '#334155', drawBorder: false },
+                    grid: { color: '#334155' },
                     ticks: { color: '#94a3b8', font: { size: 10 } },
                     title: { display: true, text: 'Index', color: '#64748b', font: { size: 10 } }
                 },
                 y: {
                     min: zoomConfig.minY !== '' ? Number(zoomConfig.minY) : undefined,
                     max: zoomConfig.maxY !== '' ? Number(zoomConfig.maxY) : undefined,
-                    grid: { color: '#334155', drawBorder: false },
+                    grid: { color: '#334155' },
                     ticks: { color: '#94a3b8', font: { size: 10 } },
                     title: { display: true, text: col, color: '#64748b', font: { size: 10 } }
                 },
@@ -552,7 +551,7 @@ export default function VisualizerWorkspace() {
                             backgroundColor: 'rgba(14, 165, 233, 0.3)',
                         },
                         mode: 'xy',
-                        onZoomComplete: ({ chart }: any) => {
+                        onZoomComplete: ({ chart }: { chart: ChartJS }) => {
                             const { min: xMin, max: xMax } = chart.scales.x;
                             const { min: yMin, max: yMax } = chart.scales.y;
 
@@ -586,7 +585,7 @@ export default function VisualizerWorkspace() {
                         enabled: selectedChart === col,
                         modifierKey: 'shift', // User requested Right Click, but library limits this. Using Shift as stable alternative.
                         mode: 'xy',
-                        onPanComplete: ({ chart }: any) => {
+                        onPanComplete: ({ chart }: { chart: ChartJS }) => {
                             const { min: xMin, max: xMax } = chart.scales.x;
                             const { min: yMin, max: yMax } = chart.scales.y;
 

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from 'react';
+import { API_URL, errorMessage, readApiError } from '@/lib/api';
 
 // Use union type to allow blank inputs
 type RadarParamValue = number | "";
@@ -13,27 +14,26 @@ type RadarParam = {
     count: RadarParamValue;
 };
 
+type ParamKey = 'frequency' | 'pulse_width' | 'pri' | 'amplitude' | 'doa_az' | 'doa_el';
+const PARAM_KEYS: ParamKey[] = ['frequency', 'pulse_width', 'pri', 'amplitude', 'doa_az', 'doa_el'];
+
 // Main Grid State
-type FormData = {
-    frequency: RadarParam;
-    pulse_width: RadarParam;
-    pri: RadarParam;
-    amplitude: RadarParam;
-    doa_az: RadarParam;
-    doa_el: RadarParam;
+type FormData = Record<ParamKey, RadarParam> & {
     toa_initial: RadarParamValue;
     shuffle: boolean;
 };
 
-// Backend Expected Config
-type RadarConfig = {
-    frequency: RadarParam;
-    pulse_width: RadarParam;
-    pri: RadarParam;
-    amplitude: RadarParam;
-    doa_az: RadarParam;
-    doa_el: RadarParam;
-    toa_initial: RadarParamValue;
+// Backend Expected Config (null = parameter left empty)
+type ApiParam = {
+    min_val: number | null;
+    max_val: number | null;
+    step: number | null;
+    variance: number | null;
+    count: number;
+};
+
+type RadarConfig = Record<ParamKey, ApiParam> & {
+    toa_initial: number;
 };
 
 // Initial State is BLANK
@@ -57,7 +57,7 @@ const initialData: FormData = {
 };
 
 // Validation Constants
-const LIMITS: Record<string, { min: number; max: number; varMax: number }> = {
+const LIMITS: Record<ParamKey, { min: number; max: number; varMax: number }> = {
     frequency: { min: 1000, max: 40000, varMax: 3 },
     pulse_width: { min: 1, max: 2000, varMax: 0.2 },
     pri: { min: 5, max: 5000, varMax: 0.2 },
@@ -65,6 +65,40 @@ const LIMITS: Record<string, { min: number; max: number; varMax: number }> = {
     doa_az: { min: -30, max: 30, varMax: 1 },
     doa_el: { min: -30, max: 30, varMax: 1 },
 };
+
+// Values used by the Radar Inputs box when a field is left blank
+const SIMPLE_DEFAULTS: Record<ParamKey, number> = {
+    frequency: 1000,
+    pulse_width: 10,
+    pri: 100,
+    amplitude: -50,
+    doa_az: 0,
+    doa_el: 0,
+};
+
+const emptySimpleBox = (): Record<ParamKey, string> => ({
+    frequency: "",
+    pulse_width: "",
+    pri: "",
+    amplitude: "",
+    doa_az: "",
+    doa_el: "",
+});
+
+const paramLabel = (key: ParamKey) => key.toUpperCase().replace('_', ' ');
+
+const getParamStatus = (param: RadarParam): "EMPTY" | "PARTIAL" | "FULL" => {
+    const fields = [param.min_val, param.max_val, param.step, param.variance, param.count];
+    const emptyCount = fields.filter(f => f === "").length;
+
+    if (emptyCount === 5) return "EMPTY";
+    if (emptyCount === 0) return "FULL";
+    return "PARTIAL";
+};
+
+const fixedParam = (value: number): ApiParam => ({ min_val: value, max_val: value, step: 0, variance: 0, count: 1 });
+
+const emptyApiParam = (): ApiParam => ({ min_val: null, max_val: null, step: null, variance: null, count: 1 });
 
 export default function RadarGrid() {
     const [formData, setFormData] = useState<FormData>(initialData);
@@ -77,21 +111,13 @@ export default function RadarGrid() {
     // Simple Box State
     const [simpleTotalRadars, setSimpleTotalRadars] = useState<number | "">("");
     const [simpleCurrentIndex, setSimpleCurrentIndex] = useState(0); // 0-indexed
-    const [simpleBox, setSimpleBox] = useState({
-        frequency: "",
-        pulse_width: "",
-        pri: "",
-        amplitude: "",
-        doa_az: "",
-        doa_el: ""
-    });
+    const [simpleBox, setSimpleBox] = useState(emptySimpleBox);
     const [simpleRadars, setSimpleRadars] = useState<RadarConfig[]>([]);
 
-    const validateInput = (category: string, field: string, value: RadarParamValue) => {
+    const validateInput = (category: ParamKey, field: keyof RadarParam, value: RadarParamValue) => {
         if (value === "") return null;
 
         const limits = LIMITS[category];
-        if (!limits) return null;
 
         if (field === 'min_val' || field === 'max_val') {
             if (value < limits.min || value > limits.max) {
@@ -103,28 +129,21 @@ export default function RadarGrid() {
                 return `Var Max: ${limits.varMax}`;
             }
         }
+        if (field === 'step' && value < 0) {
+            return 'Step must be >= 0';
+        }
+        if (field === 'count' && (value < 1 || !Number.isInteger(value))) {
+            return 'Count must be a whole number >= 1';
+        }
         return null;
     };
 
-    const handleChange = (
-        category: keyof FormData,
-        field: keyof RadarParam | "val" | "checked",
-        value: string | boolean
-    ) => {
-        if (category === "shuffle") {
-            setFormData(prev => ({ ...prev, shuffle: value as boolean }));
-            return;
-        }
+    const parseInput = (value: string): RadarParamValue => (value === "" ? "" : parseFloat(value));
 
-        const strVal = value as string;
-        const numVal = strVal === "" ? "" : parseFloat(strVal);
+    const handleParamChange = (category: ParamKey, field: keyof RadarParam, value: string) => {
+        const numVal = parseInput(value);
 
-        if (category === "toa_initial") {
-            setFormData(prev => ({ ...prev, toa_initial: numVal as RadarParamValue }));
-            return;
-        }
-
-        const errorMsg = validateInput(category, field as string, numVal);
+        const errorMsg = validateInput(category, field, numVal);
         setErrors(prev => ({
             ...prev,
             [`${category}-${field}`]: errorMsg || ""
@@ -133,26 +152,31 @@ export default function RadarGrid() {
         setFormData(prev => ({
             ...prev,
             [category]: {
-                ...(prev[category as keyof FormData] as RadarParam),
+                ...prev[category],
                 [field]: numVal
             }
         }));
     };
 
-    const handleSimpleChange = (field: string, value: string) => {
+    const handleSimpleChange = (field: ParamKey, value: string) => {
         setSimpleBox(prev => ({ ...prev, [field]: value }));
     };
 
-    // Helper to create config from simple box inputs
-    const createSimpleConfig = (): RadarConfig => ({
-        frequency: { min_val: parseFloat(simpleBox.frequency) || 1000, max_val: parseFloat(simpleBox.frequency) || 1000, step: 0, variance: 0, count: 1 },
-        pulse_width: { min_val: parseFloat(simpleBox.pulse_width) || 10, max_val: parseFloat(simpleBox.pulse_width) || 10, step: 0, variance: 0, count: 1 },
-        pri: { min_val: parseFloat(simpleBox.pri) || 100, max_val: parseFloat(simpleBox.pri) || 100, step: 0, variance: 0, count: 1 },
-        amplitude: { min_val: parseFloat(simpleBox.amplitude) || -50, max_val: parseFloat(simpleBox.amplitude) || -50, step: 0, variance: 0, count: 1 },
-        doa_az: { min_val: parseFloat(simpleBox.doa_az) || 0, max_val: parseFloat(simpleBox.doa_az) || 0, step: 0, variance: 0, count: 1 },
-        doa_el: { min_val: parseFloat(simpleBox.doa_el) || 0, max_val: parseFloat(simpleBox.doa_el) || 0, step: 0, variance: 0, count: 1 },
-        toa_initial: formData.toa_initial === "" ? 0 : formData.toa_initial // Propagate initial TOA safely
-    });
+    // Build a fixed-value config from the simple box; returns an error message if a value is out of range
+    const createSimpleConfig = (): RadarConfig | string => {
+        const config = { toa_initial: formData.toa_initial === "" ? 0 : formData.toa_initial } as RadarConfig;
+
+        for (const key of PARAM_KEYS) {
+            const raw = simpleBox[key].trim();
+            const value = raw === "" ? SIMPLE_DEFAULTS[key] : parseFloat(raw);
+            const limit = LIMITS[key];
+            if (!Number.isFinite(value) || value < limit.min || value > limit.max) {
+                return `${paramLabel(key)} must be between ${limit.min} and ${limit.max}.`;
+            }
+            config[key] = fixedParam(value);
+        }
+        return config;
+    };
 
     const handleAddSimpleSequential = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -164,39 +188,25 @@ export default function RadarGrid() {
         }
 
         const currentConfig = createSimpleConfig();
+        if (typeof currentConfig === 'string') {
+            alert(currentConfig);
+            return;
+        }
 
-        // Logic: ADD or GENERATE
         if (simpleCurrentIndex < total - 1) {
-            // ACTION: ADD
+            // ADD: queue this radar and clear inputs for the next one (keep No of Radars)
             setSimpleRadars(prev => [...prev, currentConfig]);
             setSimpleCurrentIndex(prev => prev + 1);
-            // Reset simple inputs for next radar (but keep No of Radars)
-            setSimpleBox({
-                frequency: "",
-                pulse_width: "",
-                pri: "",
-                amplitude: "",
-                doa_az: "",
-                doa_el: ""
-            });
+            setSimpleBox(emptySimpleBox());
         } else {
-            // ACTION: GENERATE (Last Radar)
+            // GENERATE (Last Radar), then reset for the next batch
             const finalRadars = [...simpleRadars, currentConfig];
             await generatePayload(finalRadars);
 
-            // Allow reset?
-            // Resetting for next batch
             setSimpleRadars([]);
             setSimpleCurrentIndex(0);
             setSimpleTotalRadars("");
-            setSimpleBox({
-                frequency: "",
-                pulse_width: "",
-                pri: "",
-                amplitude: "",
-                doa_az: "",
-                doa_el: ""
-            });
+            setSimpleBox(emptySimpleBox());
         }
     };
 
@@ -208,15 +218,13 @@ export default function RadarGrid() {
         };
 
         try {
-            const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-            const response = await fetch(`${apiUrl}/generate`, {
+            const response = await fetch(`${API_URL}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
             if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(errorText || 'Generation failed');
+                throw new Error(await readApiError(response, 'Generation failed'));
             }
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
@@ -226,71 +234,33 @@ export default function RadarGrid() {
             document.body.appendChild(a);
             a.click();
             a.remove();
-        } catch (error: any) {
+            window.URL.revokeObjectURL(url);
+        } catch (error) {
             console.error(error);
-            alert(error.message);
+            alert(errorMessage(error));
         } finally {
             setLoading(false);
         }
     }
 
-    const processDefaults = (data: FormData): any => {
-        const processed: any = { ...data };
-        if (processed.toa_initial === "") processed.toa_initial = 0;
-
-        Object.keys(LIMITS).forEach((key) => {
-            const category = key as keyof typeof LIMITS;
-            const param = { ...data[category as keyof FormData] as RadarParam };
-            const limit = LIMITS[category];
-
-            if (param.min_val === "") param.min_val = limit.min;
-            if (param.max_val === "") param.max_val = limit.max;
-            if (param.step === "") {
-                const range = (param.max_val as number) - (param.min_val as number);
-                // Default to 3 points (Min, Mid, Max) -> range / 2. 
-                param.step = range > 0 ? range / 2 : 1;
-            }
-            if (param.variance === "") param.variance = 0;
-            if (param.count === "") param.count = 1;
-
-            processed[category] = param;
-        });
-        return processed;
-    };
-
-    const getParamStatus = (param: RadarParam): "EMPTY" | "PARTIAL" | "FULL" => {
-        const fields = [param.min_val, param.max_val, param.step, param.variance, param.count];
-        const emptyCount = fields.filter(f => f === "").length;
-
-        if (emptyCount === 5) return "EMPTY";
-        if (emptyCount === 0) return "FULL";
-        return "PARTIAL";
-    };
-
-    const getStrictValidationErrors = (data: FormData): string | null => {
-        // Check for PARTIAL fields
-        for (const key of Object.keys(LIMITS)) {
-            const category = key as keyof typeof LIMITS;
-            const param = data[category as keyof FormData] as RadarParam;
-
-            const status = getParamStatus(param);
-            if (status === "PARTIAL") {
-                const label = category.toUpperCase().replace('_', ' ');
-                // Find specifically what is missing for better UX? or just generic "Incomplete"
-                return `${label} is incomplete. Please fill all fields or leave entirely empty.`;
-            }
+    // Auto Fill ON: fill each blank field (min/max from LIMITS, step = 3-point sweep)
+    // Auto Fill OFF: FULL params are sent as-is, EMPTY ones are sent as null (validated beforehand)
+    const toApiParam = (key: ParamKey, param: RadarParam): ApiParam => {
+        if (!autoFill) {
+            if (getParamStatus(param) === "EMPTY") return emptyApiParam();
+            return param as ApiParam;
         }
-        return null;
-    };
 
-    const createEmptyParam = (): RadarParam => {
-        // Send NULLs/Empty logic to backend (backend now accepts Optional fields)
+        const limit = LIMITS[key];
+        const min_val = param.min_val === "" ? limit.min : param.min_val;
+        const max_val = param.max_val === "" ? limit.max : param.max_val;
+        const range = max_val - min_val;
         return {
-            min_val: null as any,
-            max_val: null as any,
-            step: null as any,
-            variance: null as any,
-            count: 1
+            min_val,
+            max_val,
+            step: param.step === "" ? (range > 0 ? range / 2 : 1) : param.step,
+            variance: param.variance === "" ? 0 : param.variance,
+            count: param.count === "" ? 1 : param.count,
         };
     };
 
@@ -303,61 +273,19 @@ export default function RadarGrid() {
             return;
         }
 
-        let gridConfig: RadarConfig = { ...initialData } as any; // Temporary cast
-
-        // Strict Validation (Always check for partials if OFF, or even ON? User said "when auto fill is off... if incomplete throw error".
-        // Actually, if Auto Fill is ON, we usually fill the rest. But "Partial" is ambiguous for auto-fill.
-        // Usually Auto Fill fills *Empty* fields. Filling *Partial* fields is risky (which default to use?).
-        // Let's enforce NO PARTIALS regardless of Toggle, or only when OFF?
-        // User: "when the auto fill is off... throw an error". 
-        // Implies when ON, maybe it fills partials? `processDefaults` fills *each field* individually.
-        // So existing `processDefaults` handles partials by filling missing slots with defaults.
-        // So we only validate partials when OFF.
-
         if (!autoFill) {
-            const errorMsg = getStrictValidationErrors(formData);
-            if (errorMsg) {
-                alert(`Auto Fill is OFF. ${errorMsg}`);
+            const partial = PARAM_KEYS.find(key => getParamStatus(formData[key]) === "PARTIAL");
+            if (partial) {
+                alert(`Auto Fill is OFF. ${paramLabel(partial)} is incomplete. Please fill all fields or leave entirely empty.`);
                 return;
             }
         }
 
-        // Construction
-        const processed: any = { ...formData };
-        if (processed.toa_initial === "") processed.toa_initial = 0;
+        const gridConfig = { toa_initial: formData.toa_initial === "" ? 0 : formData.toa_initial } as RadarConfig;
+        for (const key of PARAM_KEYS) {
+            gridConfig[key] = toApiParam(key, formData[key]);
+        }
 
-        Object.keys(LIMITS).forEach((key) => {
-            const category = key as keyof typeof LIMITS;
-            const param = formData[category as keyof FormData] as RadarParam;
-            const status = getParamStatus(param);
-
-            if (!autoFill) {
-                // OFF: Full -> User, Empty -> Static Default
-                if (status === "EMPTY") {
-                    processed[category] = createEmptyParam();
-                } else {
-                    // FULL (Validated above)
-                    processed[category] = param;
-                }
-            } else {
-                // ON: Process Defaults (handles Partials and Empties with Sweeps)
-                const limit = LIMITS[category];
-                const newParam = { ...param };
-
-                if (newParam.min_val === "") newParam.min_val = limit.min;
-                if (newParam.max_val === "") newParam.max_val = limit.max;
-                if (newParam.step === "") {
-                    const range = (newParam.max_val as number) - (newParam.min_val as number);
-                    newParam.step = range > 0 ? range / 2 : 1;
-                }
-                if (newParam.variance === "") newParam.variance = 0;
-                if (newParam.count === "") newParam.count = 1;
-
-                processed[category] = newParam;
-            }
-        });
-
-        gridConfig = processed;
         await generatePayload([gridConfig]);
     };
 
@@ -368,16 +296,16 @@ export default function RadarGrid() {
             <form onSubmit={handleGridSubmit} className="flex-1 w-full order-2 xl:order-1">
                 {/* 3x2 Grid Layout */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-8 mb-12">
-                    {[
+                    {([
                         { label: 'FREQUENCY', unit: 'MHz', id: 'frequency', color: 'text-blue-400', border: 'border-blue-500/30' },
                         { label: 'PULSE WIDTH', unit: 'µs', id: 'pulse_width', color: 'text-emerald-400', border: 'border-emerald-500/30' },
-                        { label: 'PRI - PULSE REPITITION INTERVAL', unit: 'µs', id: 'pri', color: 'text-violet-400', border: 'border-violet-500/30' },
+                        { label: 'PRI - PULSE REPETITION INTERVAL', unit: 'µs', id: 'pri', color: 'text-violet-400', border: 'border-violet-500/30' },
                         { label: 'AMPLITUDE', unit: 'dBm', id: 'amplitude', color: 'text-amber-400', border: 'border-amber-500/30' },
                         { label: 'DOA AZIMUTHAL', unit: 'deg', id: 'doa_az', color: 'text-rose-400', border: 'border-rose-500/30' },
                         { label: 'DOA ELEVATION', unit: 'deg', id: 'doa_el', color: 'text-cyan-400', border: 'border-cyan-500/30' },
-                    ].map((row) => {
-                        const category = row.id as keyof FormData;
-                        const data = formData[category] as RadarParam;
+                    ] as const).map((row) => {
+                        const category: ParamKey = row.id;
+                        const data = formData[category];
 
                         return (
                             <div key={row.id} className={`bg-slate-900/40 backdrop-blur-md border ${row.border} rounded-xl p-5 shadow-xl flex flex-col`}>
@@ -393,23 +321,21 @@ export default function RadarGrid() {
                                         </div>
                                     </div>
                                     {/* Range Display */}
-                                    {LIMITS[category] && (
-                                        <div className="flex flex-col gap-1 text-[10px] text-slate-500 font-mono mt-2">
-                                            <span>Range: <span className="text-slate-300 font-bold">[{LIMITS[category].min} - {LIMITS[category].max}]</span></span>
-                                            <span>Variance Max: <span className="text-slate-300 font-bold">{LIMITS[category].varMax}</span></span>
-                                        </div>
-                                    )}
+                                    <div className="flex flex-col gap-1 text-[10px] text-slate-500 font-mono mt-2">
+                                        <span>Range: <span className="text-slate-300 font-bold">[{LIMITS[category].min} - {LIMITS[category].max}]</span></span>
+                                        <span>Variance Max: <span className="text-slate-300 font-bold">{LIMITS[category].varMax}</span></span>
+                                    </div>
                                 </div>
 
                                 {/* Inputs Grid */}
                                 <div className="space-y-3 flex-grow">
-                                    {[
-                                        { label: 'Min', field: 'min_val', placeholder: LIMITS[category]?.min },
-                                        { label: 'Max', field: 'max_val', placeholder: LIMITS[category]?.max },
+                                    {([
+                                        { label: 'Min', field: 'min_val', placeholder: LIMITS[category].min },
+                                        { label: 'Max', field: 'max_val', placeholder: LIMITS[category].max },
                                         { label: 'Step', field: 'step', placeholder: '1' },
                                         { label: 'Variance', field: 'variance', placeholder: '0' },
                                         { label: 'Count', field: 'count', placeholder: '1' },
-                                    ].map(({ label, field, placeholder }) => {
+                                    ] as const).map(({ label, field, placeholder }) => {
                                         const errorKey = `${category}-${field}`;
                                         const hasError = errors[errorKey];
 
@@ -426,8 +352,8 @@ export default function RadarGrid() {
                                                         className={`w-full bg-slate-950/80 border rounded px-3 py-1.5 text-sm font-mono text-slate-200 outline-none transition-all text-right placeholder-slate-700
                                                             ${hasError ? 'border-red-500 focus:border-red-500 focus:ring-1 focus:ring-red-500' : 'border-slate-800 focus:border-white/20 focus:ring-1 focus:ring-white/10 hover:border-slate-700'}
                                                         `}
-                                                        value={data[field as keyof RadarParam]}
-                                                        onChange={(e) => handleChange(category, field as any, e.target.value)}
+                                                        value={data[field]}
+                                                        onChange={(e) => handleParamChange(category, field, e.target.value)}
                                                     />
                                                     {/* Error Message */}
                                                     {hasError && (
@@ -460,7 +386,7 @@ export default function RadarGrid() {
                                 placeholder="0"
                                 className="w-16 md:w-24 bg-white/5 border border-white/10 rounded px-2 py-1 text-xs font-mono text-white font-bold outline-none focus:border-sky-500/50 transition-colors text-center placeholder-slate-600"
                                 value={formData.toa_initial}
-                                onChange={(e) => handleChange("toa_initial", "val", e.target.value)}
+                                onChange={(e) => setFormData(prev => ({ ...prev, toa_initial: parseInput(e.target.value) }))}
                             />
                         </div>
 
@@ -477,7 +403,7 @@ export default function RadarGrid() {
                         <div className="h-4 w-px bg-white/10 hidden md:block"></div>
 
                         {/* Shuffle Toggle */}
-                        <div className="flex items-center gap-2 cursor-pointer" onClick={() => handleChange("shuffle", "checked", !formData.shuffle)}>
+                        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setFormData(prev => ({ ...prev, shuffle: !prev.shuffle }))}>
                             <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${formData.shuffle ? 'bg-sky-500 border-sky-500' : 'bg-transparent border-slate-600'}`}>
                                 {formData.shuffle && <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>}
                             </div>
@@ -539,21 +465,21 @@ export default function RadarGrid() {
                         />
                     </div>
 
-                    {[
+                    {([
                         { label: 'Frequency', id: 'frequency' },
                         { label: 'Pulse Width', id: 'pulse_width' },
                         { label: 'PRI', id: 'pri' },
                         { label: 'Amplitude', id: 'amplitude' },
                         { label: 'DOA Az', id: 'doa_az' },
                         { label: 'DOA El', id: 'doa_el' },
-                    ].map((field) => (
+                    ] as const).map((field) => (
                         <div key={field.id} className="flex flex-col gap-1">
                             <label className="text-xs font-bold text-slate-400 uppercase">{field.label}</label>
                             <input
                                 type="number"
                                 className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm text-white outline-none focus:border-white/40 transition-colors placeholder-slate-600"
-                                placeholder="0"
-                                value={simpleBox[field.id as keyof typeof simpleBox]}
+                                placeholder={String(SIMPLE_DEFAULTS[field.id])}
+                                value={simpleBox[field.id]}
                                 onChange={(e) => handleSimpleChange(field.id, e.target.value)}
                             />
                         </div>

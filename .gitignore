@@ -1,0 +1,17 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build output
+backend/build/
+backend/dist/
+backend/out/
+frontend/release/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
